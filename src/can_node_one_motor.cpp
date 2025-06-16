@@ -35,7 +35,7 @@ int main() {
     signal(SIGINT, signal_callback_handler);
 
     std::cout << "\n請輸入指令啟動馬達操作："
-                 "\n(enable / disable / passive / set / reset / read / position / stop / exit)\n";
+                 "\n(enable / disable / passive / set / reset / position / stop / exit)\n";
 
     while (true) {
         if (shutdown_requested) {
