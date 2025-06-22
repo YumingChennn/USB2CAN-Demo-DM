@@ -1,7 +1,7 @@
 // Copyright (c) 2023–2025 TANGAIR
 // SPDX-License-Identifier: Apache-2.0
 
-#include "Tangair_usb2can_one_motor.h"
+#include "Tangair_usb2can_motor_imu.h"
 #include <memory>
 #include <iostream>
 #include <csignal>
@@ -22,7 +22,17 @@ void signal_callback_handler(int signum) {
     shutdown_requested = 1;
 }
 
-int main() {
+int main(int argc, const char **argv) {
+    if (argc < 2)
+    {
+        ChannelFactory::Instance()->Init(1, "lo");
+    }
+    else
+    {
+        ChannelFactory::Instance()->Init(0, argv[1]);
+    }
+    std::cout << "Press enter to start";
+
     // 設定 real-time 行程排程
     pid_t pid = getpid();
     sched_param param;
@@ -33,6 +43,7 @@ int main() {
 
     CAN_ptr = std::make_shared<Tangair_usb2can>();
     signal(SIGINT, signal_callback_handler);
+    CAN_ptr->Init();
 
     std::cout << "\n請輸入指令啟動馬達操作："
                  "\n(enable / disable / passive / set / reset / position / stop / exit)\n";

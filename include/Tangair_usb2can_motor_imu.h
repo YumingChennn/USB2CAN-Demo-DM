@@ -1,7 +1,7 @@
 // # Copyright (c) 2023-2025 TANGAIR 
 // # SPDX-License-Identifier: Apache-2.0
-#ifndef TANGAIR_USB2CAN_ONE_MOTOR_H
-#define TANGAIR_USB2CAN_ONE_MOTOR_H
+#ifndef Tangair_usb2can_motor_imu_H
+#define Tangair_usb2can_motor_imu_H
 
 #include <assert.h>
 #include <chrono>
@@ -17,11 +17,23 @@
 #include <unistd.h>
 #include <atomic>
 #include "usb_can.h"
+#include <vector>
+
+#include <math.h>
+#include <unitree/robot/channel/channel_publisher.hpp>
+#include <unitree/robot/channel/channel_subscriber.hpp>
+#include <unitree/idl/go2/LowState_.hpp>
+#include <unitree/idl/go2/LowCmd_.hpp>
+#include <unitree/common/time/time_tool.hpp>
+#include <unitree/common/thread/thread.hpp>
 
 
 // 辅助函数
+std::vector<std::vector<double>> mujoco_ang2real_ang(const std::vector<double>& dof_pos);
+
 float uint_to_float(int x_int, float x_min, float x_max, int bits);
 int float_to_uint(float x, float x_min, float x_max, int bits);
+uint32_t crc32_core(uint32_t *ptr, uint32_t len);
 
 //达妙其他电机参数    {P, V, T}
 				// {12.5, 30, 10 }, // DM4310
@@ -49,7 +61,14 @@ int float_to_uint(float x, float x_min, float x_max, int bits);
 #define KD_MIN 0.0f
 #define KD_MAX 5.0f
 
+using namespace unitree::common;
+using namespace unitree::robot;
 
+#define TOPIC_LOWCMD "rt/lowcmd"
+#define TOPIC_LOWSTATE "rt/lowstate"
+
+constexpr double PosStopF = (2.146E+9f);
+constexpr double VelStopF = (16000.0f);
 
 
 #define PI (3.1415926f)
@@ -103,9 +122,11 @@ public:
 	
 	std::atomic<bool> all_thread_done_{false};
 	std::atomic<bool> running_{false};
+	
 
 	Tangair_usb2can();
 	~Tangair_usb2can();
+	void Init();
   
 	// CAN设备0
 	int USB2CAN0_;
@@ -187,10 +208,35 @@ public:
 
 	void CAN_TX_ALL_MOTOR(int delay_us);
 
+	void InitLowCmd();
+    
+	void LowCmdMessageHandler(const void *messages);
+    
+	void LowCmdWrite();
 	
 private:
-	std::atomic<double> target_position_;
+	std::array<std::array<double, 4>, 3> target_pos;
+	std::array<std::array<double, 4>, 3> real_angles_;
+	std::vector<double> dof_pos;
 
+	double stand_up_joint_pos[12] = {0.00571868, 0.608813, -1.21763, -0.00571868, 0.608813, -1.21763,
+                                     0.00571868, 0.608813, -1.21763, -0.00571868, 0.608813, -1.21763};
+    double stand_down_joint_pos[12] = {0.0473455, 1.22187, -2.44375, -0.0473455, 1.22187, -2.44375, 0.0473455,
+                                       1.22187, -2.44375, -0.0473455, 1.22187, -2.44375};
+    double dt = 0.002;
+    double runing_time = 0.0;
+    double phase = 0.0;
+
+    unitree_go::msg::dds_::LowCmd_ low_cmd{};     // default init
+    unitree_go::msg::dds_::LowState_ low_state{}; // default init
+
+    /*publisher*/
+    ChannelPublisherPtr<unitree_go::msg::dds_::LowCmd_> lowcmd_publisher;
+    /*subscriber*/
+    ChannelSubscriberPtr<unitree_go::msg::dds_::LowCmd_> lowcmd_subscriber;
+
+    /*LowCmd write thread*/
+    ThreadPtr lowCmdWriteThreadPtr;
 };
 
 #endif

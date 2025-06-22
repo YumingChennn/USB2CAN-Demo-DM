@@ -1,10 +1,12 @@
 // # Copyright (c) 2023-2025 TANGAIR 
 // # SPDX-License-Identifier: Apache-2.0
-#include "Tangair_usb2can_one_motor.h"
+#include "Tangair_usb2can_motor_imu.h"
 #include <chrono>
 #include <cmath>
 #include <array> 
 #include <iostream>
+#include <algorithm> // for std::find
+#include <stdexcept> // for std::runtime_error
 using namespace std::chrono;
 
 
@@ -12,7 +14,7 @@ using namespace std::chrono;
 /// @return
 Tangair_usb2can::Tangair_usb2can() 
 {
-    std::cout << "begin " << running_ ;
+    std::cout << "begin " << running_.load();
 
     USB2CAN0_ = openUSBCAN("/dev/ttyRedDog");
     if (USB2CAN0_ == -1)
@@ -40,6 +42,46 @@ Tangair_usb2can::~Tangair_usb2can()
 
     // 关闭设备
     closeUSBCAN(USB2CAN0_);
+}
+
+void Tangair_usb2can::Init()
+{
+    // InitLowCmd();
+    // /*create publisher*/
+    // lowcmd_publisher.reset(new ChannelPublisher<unitree_go::msg::dds_::LowCmd_>(TOPIC_LOWCMD));
+    // lowcmd_publisher->InitChannel();
+
+    /*create subscriber*/
+    lowcmd_subscriber.reset(new ChannelSubscriber<unitree_go::msg::dds_::LowCmd_>(TOPIC_LOWCMD));
+    lowcmd_subscriber->InitChannel(std::bind(&Tangair_usb2can::LowCmdMessageHandler, this, std::placeholders::_1), 1);
+
+    /*loop publishing thread*/
+    // lowCmdWriteThreadPtr = CreateRecurrentThreadEx("writebasiccmd", UT_CPU_ID_NONE, int(dt * 1000000), &Custom::LowCmdWrite, this);
+}
+
+void Tangair_usb2can::LowCmdMessageHandler(const void *message)
+{
+    low_cmd = *(unitree_go::msg::dds_::LowCmd_ *)message;
+
+    std::vector<double> dof_pos;
+    for (int i = 0; i < 12; ++i) {
+        dof_pos.push_back(low_cmd.motor_cmd()[i].q());
+    }
+
+    // ✅ 正確：手動將 vector 拷貝到 array
+    auto temp = mujoco_ang2real_ang(dof_pos);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            real_angles_[i][j] = temp[i][j];
+        }
+    }
+
+    // for (size_t row = 0; row < real_angles_.size(); ++row) {
+    //     for (double val : real_angles_[row]) {
+    //         std::cout << val << " ";
+    //     }
+    // }
+
 }
 
 void Tangair_usb2can::StartPositionLoop() {
@@ -125,9 +167,15 @@ void Tangair_usb2can::CAN_TX_position_sin_thread()
         count_tx++;
         tx_count++;
 
-        SetTargetPosition({{ {  3.0, -3.0, -3.0,  3.0}, 
-                             { -1.6,  1.6,  1.6, -1.6},
-                             {  0.0,  0.0,  0.0,  0.0}}}, 3.0, 0.1);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            target_pos[i][j] = real_angles_[i][j];
+        }
+    }
+
+    // 呼叫 SetTargetPosition，使用 real_angles 轉換結果
+    SetTargetPosition(target_pos, 3.0, 0.1);
+
 
         CAN_TX_ALL_MOTOR(130);
 
@@ -482,7 +530,7 @@ void Tangair_usb2can::ENABLE_ALL_MOTOR(int delay_us)
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
-void Tangair_usb2can::Tangair_usb2can::DISABLE_ALL_MOTOR(int delay_us)
+void Tangair_usb2can::DISABLE_ALL_MOTOR(int delay_us)
 {
     // FRH
     Motor_Disable(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_1_motor_send);
@@ -671,6 +719,43 @@ void Tangair_usb2can::CAN_TX_ALL_MOTOR(int delay_us)
 }
 
 /// @brief 辅助函数
+std::vector<std::vector<double>> mujoco_ang2real_ang(const std::vector<double>& dof_pos) {
+    std::vector<std::string> motor_order = {
+        "frd", "fld", "rrd", "rld",  // Lower legs
+        "fru", "flu", "rru", "rlu",  // Upper legs
+        "frh", "flh", "rrh", "rlh"   // Hips
+    };
+
+    std::vector<std::string> mujoco_order = {
+        "frh", "fru", "frd",
+        "flh", "flu", "fld",
+        "rrh", "rru", "rrd",
+        "rlh", "rlu", "rld"
+    };
+
+    std::vector<int> index_map;
+    for (const auto& name : motor_order) {
+        auto it = std::find(mujoco_order.begin(), mujoco_order.end(), name);
+        if (it == mujoco_order.end()) {
+            throw std::runtime_error("Motor name not found in mujoco_order: " + name);
+        }
+        index_map.push_back(std::distance(mujoco_order.begin(), it));
+    }
+
+    std::vector<double> reordered_dof_pos;
+    for (int i : index_map) {
+        reordered_dof_pos.push_back(dof_pos[i]);
+    }
+
+    std::vector<std::vector<double>> result = {
+        { -reordered_dof_pos[0],  reordered_dof_pos[1],  -reordered_dof_pos[2],  reordered_dof_pos[3] },
+        { -reordered_dof_pos[4],  reordered_dof_pos[5],  -reordered_dof_pos[6],  reordered_dof_pos[7] },
+        {  reordered_dof_pos[8],  reordered_dof_pos[9],  -reordered_dof_pos[10], -reordered_dof_pos[11] }
+    };
+
+    return result;
+}
+
 int float_to_uint(float x, float x_min, float x_max, int bits)
 {
     float span = x_max - x_min;
@@ -688,5 +773,37 @@ float uint_to_float(int x_int, float x_min, float x_max, int bits)
     float span = x_max - x_min;
     float offset = x_min;
     return ((float)x_int) * span / ((float)((1 << bits) - 1)) + offset;
+}
+
+uint32_t crc32_core(uint32_t *ptr, uint32_t len)
+{
+    unsigned int xbit = 0;
+    unsigned int data = 0;
+    unsigned int CRC32 = 0xFFFFFFFF;
+    const unsigned int dwPolynomial = 0x04c11db7;
+
+    for (unsigned int i = 0; i < len; i++)
+    {
+        xbit = 1 << 31;
+        data = ptr[i];
+        for (unsigned int bits = 0; bits < 32; bits++)
+        {
+            if (CRC32 & 0x80000000)
+            {
+                CRC32 <<= 1;
+                CRC32 ^= dwPolynomial;
+            }
+            else
+            {
+                CRC32 <<= 1;
+            }
+
+            if (data & xbit)
+                CRC32 ^= dwPolynomial;
+            xbit >>= 1;
+        }
+    }
+
+    return CRC32;
 }
 
